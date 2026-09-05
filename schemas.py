@@ -1,12 +1,16 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ======================
-# User
+# Authentication / User
 # ======================
 
 class UserCreate(BaseModel):
     username: str
+    password: str = Field(
+        min_length=8,
+        max_length=128,
+    )
 
 
 class UserResponse(BaseModel):
@@ -16,13 +20,17 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
 # ======================
 # Project
 # ======================
 
 class ProjectCreate(BaseModel):
     name: str
-    user_id: int
 
 
 class ProjectResponse(BaseModel):

@@ -1,14 +1,30 @@
-from fastapi import Depends, FastAPI, HTTPException
+from datetime import timedelta
+
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    status,
+)
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from database import Base, SessionLocal, engine
+from auth import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    create_access_token,
+    get_current_user,
+    get_password_hash,
+    verify_password,
+)
+from database import Base, engine, get_db
 from models import Project, Task, User
 from schemas import (
     ProjectCreate,
     ProjectResponse,
     TaskCreate,
     TaskResponse,
+    Token,
     UserCreate,
     UserResponse,
 )
@@ -19,18 +35,72 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Task Manager API",
-    description="Task management backend with users, projects and tasks",
-    version="0.3.0",
+    description=(
+        "Task management backend "
+        "with JWT authentication"
+    ),
+    version="0.4.0",
 )
 
 
-def get_db():
-    db = SessionLocal()
+# ==================================================
+# Helper functions
+# ==================================================
 
-    try:
-        yield db
-    finally:
-        db.close()
+
+def get_owned_project(
+    project_id: int,
+    current_user: User,
+    db: Session,
+) -> Project:
+    project = db.get(
+        Project,
+        project_id,
+    )
+
+    if (
+        project is None
+        or project.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
+    return project
+
+
+def get_owned_task(
+    task_id: int,
+    current_user: User,
+    db: Session,
+) -> Task:
+    statement = (
+        select(Task)
+        .join(
+            Project,
+            Task.project_id == Project.id,
+        )
+        .where(
+            Task.id == task_id,
+            Project.user_id == current_user.id,
+        )
+    )
+
+    task = db.scalar(statement)
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    return task
+
+
+# ==================================================
+# Root
+# ==================================================
 
 
 @app.get("/")
@@ -41,16 +111,16 @@ def root():
 
 
 # ==================================================
-# Users
+# Authentication
 # ==================================================
 
 
 @app.post(
-    "/users",
+    "/auth/register",
     response_model=UserResponse,
     status_code=201,
 )
-def create_user(
+def register(
     user: UserCreate,
     db: Session = Depends(get_db),
 ):
@@ -68,6 +138,9 @@ def create_user(
 
     db_user = User(
         username=user.username,
+        hashed_password=get_password_hash(
+            user.password
+        ),
     )
 
     db.add(db_user)
@@ -77,16 +150,60 @@ def create_user(
     return db_user
 
 
-@app.get(
-    "/users",
-    response_model=list[UserResponse],
+@app.post(
+    "/auth/login",
+    response_model=Token,
 )
-def get_users(
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    return db.scalars(
-        select(User).order_by(User.id)
-    ).all()
+    user = db.scalar(
+        select(User).where(
+            User.username == form_data.username
+        )
+    )
+
+    if (
+        user is None
+        or not verify_password(
+            form_data.password,
+            user.hashed_password,
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={
+                "WWW-Authenticate": "Bearer",
+            },
+        )
+
+    access_token = create_access_token(
+        data={
+            "sub": user.username,
+        },
+        expires_delta=timedelta(
+            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+        ),
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+    }
+
+
+@app.get(
+    "/users/me",
+    response_model=UserResponse,
+)
+def get_me(
+    current_user: User = Depends(
+        get_current_user
+    ),
+):
+    return current_user
 
 
 # ==================================================
@@ -102,18 +219,13 @@ def get_users(
 def create_project(
     project: ProjectCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    user = db.get(User, project.user_id)
-
-    if user is None:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
     db_project = Project(
         name=project.name,
-        user_id=project.user_id,
+        user_id=current_user.id,
     )
 
     db.add(db_project)
@@ -129,31 +241,15 @@ def create_project(
 )
 def get_projects(
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    return db.scalars(
-        select(Project).order_by(Project.id)
-    ).all()
-
-
-@app.get(
-    "/users/{user_id}/projects",
-    response_model=list[ProjectResponse],
-)
-def get_user_projects(
-    user_id: int,
-    db: Session = Depends(get_db),
-):
-    user = db.get(User, user_id)
-
-    if user is None:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found",
-        )
-
     statement = (
         select(Project)
-        .where(Project.user_id == user_id)
+        .where(
+            Project.user_id == current_user.id
+        )
         .order_by(Project.id)
     )
 
@@ -173,14 +269,15 @@ def get_user_projects(
 def create_task(
     task: TaskCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    project = db.get(Project, task.project_id)
-
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Project not found",
-        )
+    get_owned_project(
+        task.project_id,
+        current_user,
+        db,
+    )
 
     db_task = Task(
         title=task.title,
@@ -202,10 +299,23 @@ def create_task(
 )
 def get_tasks(
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    return db.scalars(
-        select(Task).order_by(Task.id)
-    ).all()
+    statement = (
+        select(Task)
+        .join(
+            Project,
+            Task.project_id == Project.id,
+        )
+        .where(
+            Project.user_id == current_user.id
+        )
+        .order_by(Task.id)
+    )
+
+    return db.scalars(statement).all()
 
 
 @app.get(
@@ -215,16 +325,15 @@ def get_tasks(
 def get_task(
     task_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    task = db.get(Task, task_id)
-
-    if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Task not found",
-        )
-
-    return task
+    return get_owned_task(
+        task_id,
+        current_user,
+        db,
+    )
 
 
 @app.get(
@@ -234,18 +343,21 @@ def get_task(
 def get_project_tasks(
     project_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    project = db.get(Project, project_id)
-
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Project not found",
-        )
+    get_owned_project(
+        project_id,
+        current_user,
+        db,
+    )
 
     statement = (
         select(Task)
-        .where(Task.project_id == project_id)
+        .where(
+            Task.project_id == project_id
+        )
         .order_by(Task.id)
     )
 
@@ -260,25 +372,21 @@ def update_task(
     task_id: int,
     updated_task: TaskCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    task = db.get(Task, task_id)
-
-    if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Task not found",
-        )
-
-    project = db.get(
-        Project,
-        updated_task.project_id,
+    task = get_owned_task(
+        task_id,
+        current_user,
+        db,
     )
 
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Project not found",
-        )
+    get_owned_project(
+        updated_task.project_id,
+        current_user,
+        db,
+    )
 
     task.title = updated_task.title
     task.description = updated_task.description
@@ -295,14 +403,15 @@ def update_task(
 def delete_task(
     task_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    task = db.get(Task, task_id)
-
-    if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Task not found",
-        )
+    task = get_owned_task(
+        task_id,
+        current_user,
+        db,
+    )
 
     db.delete(task)
     db.commit()

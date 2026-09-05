@@ -19,6 +19,11 @@ class User(Base):
         index=True,
     )
 
+    hashed_password: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
     projects: Mapped[list["Project"]] = relationship(
         back_populates="owner",
         cascade="all, delete-orphan",

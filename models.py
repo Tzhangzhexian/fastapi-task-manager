@@ -93,3 +93,10 @@ class Task(Base):
     project: Mapped["Project"] = relationship(
         back_populates="tasks",
     )
+
+    priority: Mapped[str] = mapped_column(
+    String(20),
+    server_default="medium",
+    nullable=False,
+)
+

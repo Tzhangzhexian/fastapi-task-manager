@@ -17,7 +17,7 @@ from auth import (
     get_password_hash,
     verify_password,
 )
-from database import Base, engine, get_db
+from database import get_db
 from models import Project, Task, User
 from schemas import (
     ProjectCreate,
@@ -28,9 +28,6 @@ from schemas import (
     UserCreate,
     UserResponse,
 )
-
-
-Base.metadata.create_all(bind=engine)
 
 
 app = FastAPI(
@@ -284,6 +281,7 @@ def create_task(
         description=task.description,
         completed=task.completed,
         project_id=task.project_id,
+        priority=task.priority,
     )
 
     db.add(db_task)
@@ -392,6 +390,7 @@ def update_task(
     task.description = updated_task.description
     task.completed = updated_task.completed
     task.project_id = updated_task.project_id
+    task.priority = updated_task.priority
 
     db.commit()
     db.refresh(task)

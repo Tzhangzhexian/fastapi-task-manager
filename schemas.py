@@ -49,6 +49,7 @@ class TaskCreate(BaseModel):
     title: str
     description: str = ""
     completed: bool = False
+    priority: str = "medium"
     project_id: int
 
 
@@ -58,5 +59,7 @@ class TaskResponse(BaseModel):
     description: str
     completed: bool
     project_id: int
+    priority: str
+
 
     model_config = ConfigDict(from_attributes=True)
